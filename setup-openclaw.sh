@@ -275,9 +275,10 @@ install_openclaw() {
     local NVM_DIR="$ACTUAL_HOME/.nvm"
 
     # Install build tools required by native modules (node-llama-cpp, sharp)
+    # git is required by npm for some openclaw dependencies
     type_color "$DIM" "  > Installing build dependencies..." 0.02
-    apt-get install -y -qq build-essential python3 > /dev/null 2>&1 &
-    spinner $! "Installing build-essential, python3..."
+    apt-get install -y -qq build-essential python3 git > /dev/null 2>&1 &
+    spinner $! "Installing build-essential, python3, git..."
     print_ok "Build tools ready"
 
     echo ""
