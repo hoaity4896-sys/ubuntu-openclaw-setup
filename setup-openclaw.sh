@@ -215,7 +215,7 @@ install_node() {
     # Install NVM
     type_color "$DIM" "  > Installing NVM $NVM_VERSION for $ACTUAL_USER..." 0.02
 
-    sudo -u "$ACTUAL_USER" bash -c "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash" > /dev/null 2>&1 &
+    sudo -u "$ACTUAL_USER" bash -c "export HOME=\"$ACTUAL_HOME\"; curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash" > /dev/null 2>&1 &
     spinner $! "Installing NVM..."
 
     if [ -s "$NVM_DIR/nvm.sh" ]; then
@@ -230,6 +230,7 @@ install_node() {
     type_color "$DIM" "  > Installing Node.js 24..." 0.02
 
     sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         . \"\$NVM_DIR/nvm.sh\"
         nvm install 24
@@ -240,12 +241,14 @@ install_node() {
     # Verify
     local NODE_VERSION
     NODE_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         . \"\$NVM_DIR/nvm.sh\"
         node -v 2>/dev/null
     ")
     local NPM_VERSION
     NPM_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         . \"\$NVM_DIR/nvm.sh\"
         npm -v 2>/dev/null
@@ -271,18 +274,46 @@ install_openclaw() {
     ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
     local NVM_DIR="$ACTUAL_HOME/.nvm"
 
+    # Install build tools required by native modules (node-llama-cpp, sharp)
+    type_color "$DIM" "  > Installing build dependencies..." 0.02
+    apt-get install -y -qq build-essential python3 > /dev/null 2>&1 &
+    spinner $! "Installing build-essential, python3..."
+    print_ok "Build tools ready"
+
+    echo ""
     type_color "$DIM" "  > Installing openclaw globally..." 0.02
 
-    sudo -u "$ACTUAL_USER" bash -c "
+    # HOME must be set explicitly for sudo -u
+    # SHARP_IGNORE_GLOBAL_LIBVIPS=1 skips building libvips from source on Linux
+    local INSTALL_LOG
+    INSTALL_LOG=$(sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
+        export SHARP_IGNORE_GLOBAL_LIBVIPS=1
         . \"\$NVM_DIR/nvm.sh\"
-        npm install -g openclaw@latest
-    " > /dev/null 2>&1 &
-    spinner $! "Installing openclaw@latest..."
+        npm install -g openclaw@latest 2>&1
+    " &
+    BGPID=$!
+    spinner $BGPID "Installing openclaw@latest..."
+    wait $BGPID
+    )
+    local EXIT_CODE=$?
+
+    if [ $EXIT_CODE -ne 0 ]; then
+        print_fail "Failed to install OpenClaw"
+        echo -e "  ${DIM}Try manually: SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest${NC}"
+        echo ""
+        echo -e "  ${RED}Last error:${NC}"
+        echo "$INSTALL_LOG" | tail -5 | while IFS= read -r line; do
+            echo -e "  ${DIM}$line${NC}"
+        done
+        return 1
+    fi
 
     # Verify
     local OC_VERSION
     OC_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         . \"\$NVM_DIR/nvm.sh\"
         openclaw --version 2>/dev/null
@@ -291,9 +322,8 @@ install_openclaw() {
     if [ -n "$OC_VERSION" ]; then
         print_ok "OpenClaw $OC_VERSION installed"
     else
-        print_fail "Failed to install OpenClaw"
-        echo -e "  ${DIM}Try manually: npm install -g openclaw@latest${NC}"
-        return 1
+        print_skip "OpenClaw installed but version check returned empty"
+        echo -e "  ${DIM}Run manually: openclaw --version${NC}"
     fi
 }
 
@@ -309,18 +339,21 @@ show_result() {
 
     local NODE_VERSION
     NODE_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         . \"\$NVM_DIR/nvm.sh\"
         node -v 2>/dev/null
     ")
     local NPM_VERSION
     NPM_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         . \"\$NVM_DIR/nvm.sh\"
         npm -v 2>/dev/null
     ")
     local OC_VERSION
     OC_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         . \"\$NVM_DIR/nvm.sh\"
         openclaw --version 2>/dev/null
