@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
-# Ubuntu OpenClaw Setup Script
-# All-in-one: update system, remote access, NVM, Node, OpenClaw
+# Ubuntu OpenClaw Setup Script (All-in-One)
+# Update → Curl → SSH Remote Access → NVM + Node → OpenClaw
 # Author: hoaity
 # License: MIT
 # ============================================================
@@ -22,6 +22,7 @@ BG_RED='\033[41m'
 ACTUAL_USER="${SUDO_USER:-$USER}"
 ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
 NVM_DIR="$ACTUAL_HOME/.nvm"
+BASHRC="$ACTUAL_HOME/.bashrc"
 
 # ── Helper Functions ─────────────────────────────────────────
 
@@ -42,11 +43,10 @@ print_skip() { echo -e "  ${YELLOW}[ SKIP ]${NC} ${DIM}$1${NC}"; }
 print_step() {
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${GREEN}  [$1/5]${NC} ${BOLD}${WHITE}$2${NC}"
+    echo -e "${BOLD}${GREEN}  [$1/6]${NC} ${BOLD}${WHITE}$2${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-# Spinner — shows animation while PID is alive, then clears line
 spinner() {
     local pid=$1 msg="$2"
     local chars='⣾⣽⣻⢿⡿⣟⣯⣷'
@@ -59,7 +59,6 @@ spinner() {
     printf "\r\033[2K"
 }
 
-# Run a command in background with spinner, return its exit code
 run_with_spinner() {
     local msg="$1"
     shift
@@ -70,7 +69,6 @@ run_with_spinner() {
     return $?
 }
 
-# Run command as actual user with NVM loaded
 run_as_user() {
     sudo -u "$ACTUAL_USER" bash -c "
         export HOME=\"$ACTUAL_HOME\"
@@ -107,8 +105,8 @@ show_banner() {
     echo -e "${GREEN}  ║${WHITE}   \\___/| .__/ \\___|_| |_|\\____|_|\\__,_| \\_/\\_/  ${GREEN}║${NC}"
     echo -e "${GREEN}  ║${WHITE}        |_|                                      ${GREEN}║${NC}"
     echo -e "${GREEN}  ║                                                  ║${NC}"
-    echo -e "${GREEN}  ║${CYAN}       UBUNTU SETUP ${DIM}v1.0${NC}${GREEN}                          ║${NC}"
-    echo -e "${GREEN}  ║${DIM}       github.com/hoaity/ubuntu-openclaw-setup${NC}${GREEN}  ║${NC}"
+    echo -e "${GREEN}  ║${CYAN}       ALL-IN-ONE SETUP ${DIM}v2.0${NC}${GREEN}                      ║${NC}"
+    echo -e "${GREEN}  ║${DIM}       SSH + NVM + Node + OpenClaw${NC}${GREEN}               ║${NC}"
     echo -e "${GREEN}  ║                                                  ║${NC}"
     echo -e "${GREEN}  ╚══════════════════════════════════════════════════╝${NC}"
     echo ""
@@ -150,7 +148,6 @@ install_deps() {
     type_color "$DIM" "  > Installing: $PACKAGES ..." 0.02
     run_with_spinner "Installing $PACKAGES..." apt-get install -y -qq -o=Dpkg::Use-Pty=0 $PACKAGES
 
-    # Verify each one
     local all_ok=true
     for cmd in curl git gcc python3; do
         if command -v "$cmd" &> /dev/null; then
@@ -167,36 +164,122 @@ install_deps() {
     fi
 }
 
-# ── Step 3: Run Ubuntu Remote Setup ──────────────────────
-run_remote_setup() {
-    print_step "3" "UBUNTU REMOTE ACCESS SETUP"
+# ── Step 3: SSH Remote Access ────────────────────────────
+setup_ssh() {
+    print_step "3" "SSH REMOTE ACCESS"
     echo ""
 
-    local REMOTE_URL="https://raw.githubusercontent.com/hoaity4896-sys/ubuntu-remote-setup/main/setup-ubuntu-remote.sh"
-
-    type_color "$DIM" "  > Downloading remote setup script..." 0.02
-    local SCRIPT_CONTENT
-    SCRIPT_CONTENT=$(curl -fsSL "$REMOTE_URL" 2>/dev/null)
-
-    if [ -z "$SCRIPT_CONTENT" ]; then
-        print_fail "Failed to download remote setup script"
-        echo -e "  ${DIM}URL: $REMOTE_URL${NC}"
-        return 1
-    fi
-
-    print_ok "Script downloaded"
-    echo ""
-    type_color "$DIM" "  > Running ubuntu-remote-setup..." 0.02
-    echo ""
-
-    bash -c "$SCRIPT_CONTENT"
-
+    # ── Disable sleep/suspend ──
+    type_color "$DIM" "  > Disabling sleep/suspend/hibernate..." 0.02
+    systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target > /dev/null 2>&1
     if [ $? -eq 0 ]; then
-        echo ""
-        print_ok "Ubuntu remote setup completed"
+        print_ok "sleep/suspend/hibernate → masked"
+        echo -e "  ${DIM}System will no longer auto-sleep${NC}"
     else
-        print_fail "Ubuntu remote setup encountered errors"
+        print_fail "Failed to mask sleep targets"
     fi
+
+    # ── Install openssh-server ──
+    echo ""
+    if dpkg -l | grep -q openssh-server; then
+        print_skip "OpenSSH Server is already installed"
+    else
+        type_color "$DIM" "  > Installing openssh-server..." 0.02
+        apt-get install -y -qq -o=Dpkg::Use-Pty=0 openssh-server > /dev/null 2>&1 &
+        spinner $! "Installing openssh-server..."
+
+        if dpkg -l | grep -q openssh-server; then
+            print_ok "OpenSSH Server installed"
+        else
+            print_fail "Failed to install OpenSSH Server"
+            return 1
+        fi
+    fi
+
+    # ── Enable SSH on boot ──
+    echo ""
+    type_color "$DIM" "  > Enabling SSH service..." 0.02
+    systemctl enable ssh > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        print_ok "SSH enabled on boot"
+    else
+        print_fail "Failed to enable SSH"
+    fi
+
+    type_color "$DIM" "  > Starting SSH service..." 0.02
+    systemctl start ssh > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        print_ok "SSH service is running"
+    else
+        systemctl enable sshd > /dev/null 2>&1
+        systemctl start sshd > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            print_ok "SSH service is running (sshd)"
+        else
+            print_fail "Failed to start SSH service"
+        fi
+    fi
+
+    # ── Verify ──
+    if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+        echo ""
+        echo -e "  ${GREEN}●${NC} ${WHITE}SSH Status: ${GREEN}ACTIVE${NC}"
+    fi
+
+    # ── Configure bashrc display ──
+    echo ""
+    type_color "$DIM" "  > Configuring terminal SSH info display..." 0.02
+
+    if grep -q "# >>> OPENCLAW-SETUP >>>" "$BASHRC" 2>/dev/null; then
+        sed -i '/# >>> OPENCLAW-SETUP >>>/,/# <<< OPENCLAW-SETUP <<</d' "$BASHRC"
+        print_skip "Removing old configuration..."
+    fi
+    # Also clean up legacy markers
+    if grep -q "# >>> UBUNTU-REMOTE-SETUP >>>" "$BASHRC" 2>/dev/null; then
+        sed -i '/# >>> UBUNTU-REMOTE-SETUP >>>/,/# <<< UBUNTU-REMOTE-SETUP <<</d' "$BASHRC"
+    fi
+    if grep -q "# >>> SSH-ONLY-SETUP >>>" "$BASHRC" 2>/dev/null; then
+        sed -i '/# >>> SSH-ONLY-SETUP >>>/,/# <<< SSH-ONLY-SETUP <<</d' "$BASHRC"
+    fi
+
+    cat >> "$BASHRC" << 'BASHRC_BLOCK'
+
+# >>> OPENCLAW-SETUP >>>
+# Auto-display SSH connection info on terminal open
+_show_ssh_info() {
+    local G='\033[0;32m'
+    local C='\033[0;36m'
+    local W='\033[1;37m'
+    local D='\033[2m'
+    local N='\033[0m'
+    local IP
+    IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    local USER_NAME
+    USER_NAME=$(whoami)
+    local SSH_STATUS
+
+    if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+        SSH_STATUS="${G}● Running${N}"
+    else
+        SSH_STATUS="\033[0;31m● Stopped${N}"
+    fi
+
+    echo ""
+    echo -e "${G}  ┌──────────────────────────────────────────────┐${N}"
+    echo -e "${G}  │${N}  ${W}SSH REMOTE ACCESS${N}                             ${G}│${N}"
+    echo -e "${G}  │${N}  ${D}────────────────────────────────────────${N}    ${G}│${N}"
+    echo -e "${G}  │${N}  ${C}Connect:${N} ${W}ssh ${USER_NAME}@${IP}${N}$(printf '%*s' $((23 - ${#USER_NAME} - ${#IP})) '')${G}│${N}"
+    echo -e "${G}  │${N}  ${C}Status :${N} ${SSH_STATUS}$(printf '%*s' 28 '')${G}│${N}"
+    echo -e "${G}  └──────────────────────────────────────────────┘${N}"
+    echo ""
+}
+_show_ssh_info
+
+# <<< OPENCLAW-SETUP <<<
+BASHRC_BLOCK
+
+    print_ok "Terminal SSH info display configured"
+    echo -e "  ${DIM}SSH info will show on every new terminal${NC}"
 }
 
 # ── Step 4: Install NVM + Node ───────────────────────────
@@ -257,7 +340,6 @@ install_openclaw() {
 
     type_color "$DIM" "  > Installing openclaw globally..." 0.02
 
-    # Run npm install — log to file, spinner in foreground
     sudo -u "$ACTUAL_USER" bash -c "
         export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
@@ -297,8 +379,10 @@ install_openclaw() {
     fi
 }
 
-# ── Show Final Result ────────────────────────────────────
+# ── Step 6: Final Summary ───────────────────────────────
 show_result() {
+    print_step "6" "SETUP COMPLETE"
+
     local IP
     IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
@@ -310,7 +394,7 @@ show_result() {
     echo ""
     echo ""
     type_color "$GREEN" "  ══════════════════════════════════════════════════" 0.01
-    type_color "$GREEN" "   SETUP COMPLETE" 0.03
+    type_color "$GREEN" "   ALL-IN-ONE SETUP COMPLETE" 0.03
     type_color "$GREEN" "  ══════════════════════════════════════════════════" 0.01
     echo ""
 
@@ -324,7 +408,12 @@ show_result() {
     echo -e "${GREEN}  ║${NC}  ${CYAN}npm${NC}      : ${WHITE}${NPM_V:-N/A}${NC}$(printf '%*s' $((35 - ${#NPM_V})) '')${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}  ${CYAN}OpenClaw${NC} : ${WHITE}${OC_V:-N/A}${NC}$(printf '%*s' $((35 - ${#OC_V})) '')${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}                                                  ${GREEN}║${NC}"
-    echo -e "${GREEN}  ║${NC}  ${CYAN}SSH${NC}      : ${WHITE}ssh ${ACTUAL_USER}@${IP}${NC}$(printf '%*s' $((27 - ${#ACTUAL_USER} - ${#IP})) '')${GREEN}║${NC}"
+    echo -e "${GREEN}  ╠══════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}  ║${NC}  ${BOLD}${WHITE}REMOTE ACCESS${NC}                                  ${GREEN}║${NC}"
+    echo -e "${GREEN}  ╠══════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}  ║${NC}                                                  ${GREEN}║${NC}"
+    echo -e "${GREEN}  ║${NC}  ${CYAN}SSH${NC}      : ${BOLD}${YELLOW}ssh ${ACTUAL_USER}@${IP}${NC}$(printf '%*s' $((27 - ${#ACTUAL_USER} - ${#IP})) '')${GREEN}║${NC}"
+    echo -e "${GREEN}  ║${NC}  ${CYAN}SCP${NC}      : ${DIM}scp file ${ACTUAL_USER}@${IP}:~/${NC}$(printf '%*s' $((22 - ${#ACTUAL_USER} - ${#IP})) '')${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}                                                  ${GREEN}║${NC}"
     echo -e "${GREEN}  ╠══════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}  ║${NC}  ${BOLD}${WHITE}QUICK START${NC}                                    ${GREEN}║${NC}"
@@ -347,7 +436,7 @@ main() {
     show_banner
     update_system
     install_deps
-    run_remote_setup
+    setup_ssh
     install_node
     install_openclaw
     show_result
