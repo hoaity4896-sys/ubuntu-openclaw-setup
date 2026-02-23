@@ -14,28 +14,19 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 DIM='\033[2m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 BG_GREEN='\033[42m'
 BG_RED='\033[41m'
 
+# ── Resolve actual user (not root) ──────────────────────────
+ACTUAL_USER="${SUDO_USER:-$USER}"
+ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
+NVM_DIR="$ACTUAL_HOME/.nvm"
+
 # ── Helper Functions ─────────────────────────────────────────
 
-# Typing effect - text appears character by character
-type_text() {
-    local text="$1"
-    local delay="${2:-0.02}"
-    for ((i=0; i<${#text}; i++)); do
-        printf "%s" "${text:$i:1}"
-        sleep "$delay"
-    done
-    echo ""
-}
-
-# Typing effect with color
 type_color() {
-    local color="$1"
-    local text="$2"
-    local delay="${3:-0.02}"
+    local color="$1" text="$2" delay="${3:-0.02}"
     printf "%b" "$color"
     for ((i=0; i<${#text}; i++)); do
         printf "%s" "${text:$i:1}"
@@ -44,40 +35,49 @@ type_color() {
     printf "%b\n" "$NC"
 }
 
-# Status indicators
-print_ok() {
-    echo -e "  ${BG_GREEN}${WHITE} OK ${NC} ${GREEN}$1${NC}"
-}
-
-print_fail() {
-    echo -e "  ${BG_RED}${WHITE} FAIL ${NC} ${RED}$1${NC}"
-}
-
-print_skip() {
-    echo -e "  ${YELLOW}[ SKIP ]${NC} ${DIM}$1${NC}"
-}
+print_ok()   { echo -e "  ${BG_GREEN}${WHITE} OK ${NC} ${GREEN}$1${NC}"; }
+print_fail() { echo -e "  ${BG_RED}${WHITE} FAIL ${NC} ${RED}$1${NC}"; }
+print_skip() { echo -e "  ${YELLOW}[ SKIP ]${NC} ${DIM}$1${NC}"; }
 
 print_step() {
-    local step_num="$1"
-    local step_name="$2"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${GREEN}  [$step_num/5]${NC} ${BOLD}${WHITE}$step_name${NC}"
+    echo -e "${BOLD}${GREEN}  [$1/5]${NC} ${BOLD}${WHITE}$2${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-# Progress spinner
+# Spinner — shows animation while PID is alive, then clears line
 spinner() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'
-    while ps -p "$pid" > /dev/null 2>&1; do
-        for ((i=0; i<${#spinstr}; i++)); do
-            printf "\r  ${GREEN}${spinstr:$i:1}${NC} %s" "$2"
-            sleep $delay
+    local pid=$1 msg="$2"
+    local chars='⣾⣽⣻⢿⡿⣟⣯⣷'
+    while kill -0 "$pid" 2>/dev/null; do
+        for ((i=0; i<${#chars}; i++)); do
+            printf "\r  ${GREEN}${chars:$i:1}${NC} %s" "$msg"
+            sleep 0.1
         done
     done
-    printf "\r\033[K"
+    printf "\r\033[2K"
+}
+
+# Run a command in background with spinner, return its exit code
+run_with_spinner() {
+    local msg="$1"
+    shift
+    "$@" &
+    local pid=$!
+    spinner "$pid" "$msg"
+    wait "$pid"
+    return $?
+}
+
+# Run command as actual user with NVM loaded
+run_as_user() {
+    sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
+        export NVM_DIR=\"$NVM_DIR\"
+        [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
+        $1
+    "
 }
 
 # ── Check Root ───────────────────────────────────────────────
@@ -122,49 +122,47 @@ update_system() {
     echo ""
 
     type_color "$DIM" "  > Updating package lists..." 0.02
-    apt-get update -qq > /dev/null 2>&1 &
-    spinner $! "Updating package lists..."
+    run_with_spinner "Updating package lists..." apt-get update -qq -o=Dpkg::Use-Pty=0
     print_ok "Package lists updated"
 
     echo ""
     type_color "$DIM" "  > Upgrading packages..." 0.02
-    apt-get upgrade -y -qq > /dev/null 2>&1 &
-    spinner $! "Upgrading packages..."
+    run_with_spinner "Upgrading packages..." apt-get upgrade -y -qq -o=Dpkg::Use-Pty=0
     print_ok "All packages upgraded"
 
     echo ""
     type_color "$DIM" "  > Cleaning up..." 0.02
-    apt-get autoremove -y -qq > /dev/null 2>&1 &
-    spinner $! "Removing unused packages..."
-    print_ok "Unused packages removed"
-
+    apt-get autoremove -y -qq > /dev/null 2>&1
     apt-get autoclean -qq > /dev/null 2>&1
-    print_ok "Package cache cleaned"
+    print_ok "Unused packages removed"
 
     echo ""
     echo -e "  ${DIM}System is up to date${NC}"
 }
 
-# ── Step 2: Install curl ──────────────────────────────────
-install_curl() {
-    print_step "2" "INSTALL CURL"
+# ── Step 2: Install Dependencies ─────────────────────────
+install_deps() {
+    print_step "2" "INSTALL DEPENDENCIES"
     echo ""
 
-    if command -v curl &> /dev/null; then
-        print_skip "curl is already installed"
-        echo ""
-        type_color "$DIM" "  > Skipping installation..." 0.02
-        return 0
-    fi
+    local PACKAGES="curl git build-essential python3"
 
-    type_color "$DIM" "  > Installing curl..." 0.02
-    apt-get install -y -qq curl > /dev/null 2>&1 &
-    spinner $! "Installing curl..."
+    type_color "$DIM" "  > Installing: $PACKAGES ..." 0.02
+    run_with_spinner "Installing $PACKAGES..." apt-get install -y -qq -o=Dpkg::Use-Pty=0 $PACKAGES
 
-    if command -v curl &> /dev/null; then
-        print_ok "curl installed successfully"
-    else
-        print_fail "Failed to install curl"
+    # Verify each one
+    local all_ok=true
+    for cmd in curl git gcc python3; do
+        if command -v "$cmd" &> /dev/null; then
+            print_ok "$cmd ready"
+        else
+            print_fail "$cmd not found after install"
+            all_ok=false
+        fi
+    done
+
+    if [ "$all_ok" = false ]; then
+        echo -e "  ${RED}Some dependencies failed to install${NC}"
         return 1
     fi
 }
@@ -206,17 +204,18 @@ install_node() {
     print_step "4" "INSTALL NVM + NODE 24"
     echo ""
 
-    local ACTUAL_USER="${SUDO_USER:-$USER}"
-    local ACTUAL_HOME
-    ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
-    local NVM_DIR="$ACTUAL_HOME/.nvm"
     local NVM_VERSION="v0.40.3"
 
     # Install NVM
     type_color "$DIM" "  > Installing NVM $NVM_VERSION for $ACTUAL_USER..." 0.02
 
-    sudo -u "$ACTUAL_USER" bash -c "export HOME=\"$ACTUAL_HOME\"; curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash" > /dev/null 2>&1 &
-    spinner $! "Installing NVM..."
+    sudo -u "$ACTUAL_USER" bash -c "
+        export HOME=\"$ACTUAL_HOME\"
+        curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash
+    " > /dev/null 2>&1 &
+    local pid=$!
+    spinner "$pid" "Installing NVM..."
+    wait "$pid"
 
     if [ -s "$NVM_DIR/nvm.sh" ]; then
         print_ok "NVM $NVM_VERSION installed"
@@ -229,34 +228,19 @@ install_node() {
     echo ""
     type_color "$DIM" "  > Installing Node.js 24..." 0.02
 
-    sudo -u "$ACTUAL_USER" bash -c "
-        export HOME=\"$ACTUAL_HOME\"
-        export NVM_DIR=\"$NVM_DIR\"
-        . \"\$NVM_DIR/nvm.sh\"
-        nvm install 24
-        nvm alias default 24
-    " > /dev/null 2>&1 &
-    spinner $! "Installing Node.js 24..."
+    run_as_user "nvm install 24 && nvm alias default 24" > /dev/null 2>&1 &
+    pid=$!
+    spinner "$pid" "Installing Node.js 24..."
+    wait "$pid"
 
     # Verify
-    local NODE_VERSION
-    NODE_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
-        export HOME=\"$ACTUAL_HOME\"
-        export NVM_DIR=\"$NVM_DIR\"
-        . \"\$NVM_DIR/nvm.sh\"
-        node -v 2>/dev/null
-    ")
-    local NPM_VERSION
-    NPM_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
-        export HOME=\"$ACTUAL_HOME\"
-        export NVM_DIR=\"$NVM_DIR\"
-        . \"\$NVM_DIR/nvm.sh\"
-        npm -v 2>/dev/null
-    ")
+    local NODE_V NPM_V
+    NODE_V=$(run_as_user "node -v 2>/dev/null")
+    NPM_V=$(run_as_user "npm -v 2>/dev/null")
 
-    if [ -n "$NODE_VERSION" ]; then
-        print_ok "Node.js $NODE_VERSION installed"
-        print_ok "npm $NPM_VERSION installed"
+    if [ -n "$NODE_V" ]; then
+        print_ok "Node.js $NODE_V installed"
+        print_ok "npm $NPM_V installed"
         print_ok "Default alias set to Node 24"
     else
         print_fail "Failed to install Node.js 24"
@@ -269,107 +253,59 @@ install_openclaw() {
     print_step "5" "INSTALL OPENCLAW"
     echo ""
 
-    local ACTUAL_USER="${SUDO_USER:-$USER}"
-    local ACTUAL_HOME
-    ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
-    local NVM_DIR="$ACTUAL_HOME/.nvm"
     local LOGFILE="/tmp/openclaw-install-$$.log"
 
-    # Install build tools + git (required by npm for openclaw dependencies)
-    type_color "$DIM" "  > Installing build dependencies..." 0.02
-    apt-get install -y -qq build-essential python3 git > /dev/null 2>&1 &
-    spinner $! "Installing build-essential, python3, git..."
-
-    # Wait and verify git is available
-    if command -v git &> /dev/null; then
-        print_ok "Build tools + git ready"
-    else
-        # Retry without -qq to force install
-        apt-get install -y git > /dev/null 2>&1
-        if command -v git &> /dev/null; then
-            print_ok "Build tools + git ready"
-        else
-            print_fail "Failed to install git (required by openclaw)"
-            return 1
-        fi
-    fi
-
-    echo ""
     type_color "$DIM" "  > Installing openclaw globally..." 0.02
 
-    # Run npm install in background, log to file, show spinner
+    # Run npm install — log to file, spinner in foreground
     sudo -u "$ACTUAL_USER" bash -c "
         export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         export SHARP_IGNORE_GLOBAL_LIBVIPS=1
-        . \"\$NVM_DIR/nvm.sh\"
+        [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
         npm install -g openclaw@latest
     " > "$LOGFILE" 2>&1 &
-    spinner $! "Installing openclaw@latest..."
-    wait $!
-    local EXIT_CODE=$?
+    local pid=$!
+    spinner "$pid" "Installing openclaw@latest (this may take a while)..."
+    wait "$pid"
+    local rc=$?
 
-    if [ $EXIT_CODE -ne 0 ]; then
-        print_fail "Failed to install OpenClaw"
-        echo -e "  ${DIM}Try manually: SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest${NC}"
+    if [ $rc -ne 0 ]; then
+        print_fail "Failed to install OpenClaw (exit code: $rc)"
         echo ""
         echo -e "  ${RED}Last error:${NC}"
         tail -5 "$LOGFILE" 2>/dev/null | while IFS= read -r line; do
-            echo -e "  ${DIM}$line${NC}"
+            echo -e "  ${DIM}  $line${NC}"
         done
-        rm -f "$LOGFILE"
+        echo ""
+        echo -e "  ${DIM}Full log: $LOGFILE${NC}"
+        echo -e "  ${DIM}Try manually:${NC}"
+        echo -e "  ${WHITE}  SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest${NC}"
         return 1
     fi
     rm -f "$LOGFILE"
 
     # Verify
-    local OC_VERSION
-    OC_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
-        export HOME=\"$ACTUAL_HOME\"
-        export NVM_DIR=\"$NVM_DIR\"
-        . \"\$NVM_DIR/nvm.sh\"
-        openclaw --version 2>/dev/null
-    ")
+    local OC_V
+    OC_V=$(run_as_user "openclaw --version 2>/dev/null")
 
-    if [ -n "$OC_VERSION" ]; then
-        print_ok "OpenClaw $OC_VERSION installed"
+    if [ -n "$OC_V" ]; then
+        print_ok "OpenClaw $OC_V installed"
     else
-        print_skip "OpenClaw installed but version check returned empty"
-        echo -e "  ${DIM}Run manually: openclaw --version${NC}"
+        print_skip "Installed but 'openclaw --version' returned empty"
+        echo -e "  ${DIM}Open a new terminal and try: openclaw --version${NC}"
     fi
 }
 
 # ── Show Final Result ────────────────────────────────────
 show_result() {
-    local ACTUAL_USER="${SUDO_USER:-$USER}"
-    local ACTUAL_HOME
-    ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
-    local NVM_DIR="$ACTUAL_HOME/.nvm"
-
     local IP
     IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
-    local NODE_VERSION
-    NODE_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
-        export HOME=\"$ACTUAL_HOME\"
-        export NVM_DIR=\"$NVM_DIR\"
-        . \"\$NVM_DIR/nvm.sh\"
-        node -v 2>/dev/null
-    ")
-    local NPM_VERSION
-    NPM_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
-        export HOME=\"$ACTUAL_HOME\"
-        export NVM_DIR=\"$NVM_DIR\"
-        . \"\$NVM_DIR/nvm.sh\"
-        npm -v 2>/dev/null
-    ")
-    local OC_VERSION
-    OC_VERSION=$(sudo -u "$ACTUAL_USER" bash -c "
-        export HOME=\"$ACTUAL_HOME\"
-        export NVM_DIR=\"$NVM_DIR\"
-        . \"\$NVM_DIR/nvm.sh\"
-        openclaw --version 2>/dev/null
-    ")
+    local NODE_V NPM_V OC_V
+    NODE_V=$(run_as_user "node -v 2>/dev/null")
+    NPM_V=$(run_as_user "npm -v 2>/dev/null")
+    OC_V=$(run_as_user "openclaw --version 2>/dev/null")
 
     echo ""
     echo ""
@@ -384,9 +320,9 @@ show_result() {
     echo -e "${GREEN}  ║${NC}                                                  ${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}  ${CYAN}User${NC}     : ${WHITE}${ACTUAL_USER}${NC}$(printf '%*s' $((35 - ${#ACTUAL_USER})) '')${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}  ${CYAN}IP${NC}       : ${WHITE}${IP:-N/A}${NC}$(printf '%*s' $((35 - ${#IP})) '')${GREEN}║${NC}"
-    echo -e "${GREEN}  ║${NC}  ${CYAN}Node${NC}     : ${WHITE}${NODE_VERSION:-N/A}${NC}$(printf '%*s' $((35 - ${#NODE_VERSION})) '')${GREEN}║${NC}"
-    echo -e "${GREEN}  ║${NC}  ${CYAN}npm${NC}      : ${WHITE}${NPM_VERSION:-N/A}${NC}$(printf '%*s' $((35 - ${#NPM_VERSION})) '')${GREEN}║${NC}"
-    echo -e "${GREEN}  ║${NC}  ${CYAN}OpenClaw${NC} : ${WHITE}${OC_VERSION:-N/A}${NC}$(printf '%*s' $((35 - ${#OC_VERSION})) '')${GREEN}║${NC}"
+    echo -e "${GREEN}  ║${NC}  ${CYAN}Node${NC}     : ${WHITE}${NODE_V:-N/A}${NC}$(printf '%*s' $((35 - ${#NODE_V})) '')${GREEN}║${NC}"
+    echo -e "${GREEN}  ║${NC}  ${CYAN}npm${NC}      : ${WHITE}${NPM_V:-N/A}${NC}$(printf '%*s' $((35 - ${#NPM_V})) '')${GREEN}║${NC}"
+    echo -e "${GREEN}  ║${NC}  ${CYAN}OpenClaw${NC} : ${WHITE}${OC_V:-N/A}${NC}$(printf '%*s' $((35 - ${#OC_V})) '')${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}                                                  ${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}  ${CYAN}SSH${NC}      : ${WHITE}ssh ${ACTUAL_USER}@${IP}${NC}$(printf '%*s' $((27 - ${#ACTUAL_USER} - ${#IP})) '')${GREEN}║${NC}"
     echo -e "${GREEN}  ║${NC}                                                  ${GREEN}║${NC}"
@@ -410,7 +346,7 @@ main() {
     check_root
     show_banner
     update_system
-    install_curl
+    install_deps
     run_remote_setup
     install_node
     install_openclaw
