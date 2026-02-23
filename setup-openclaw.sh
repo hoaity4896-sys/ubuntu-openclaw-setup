@@ -77,7 +77,7 @@ spinner() {
             sleep $delay
         done
     done
-    printf "\r"
+    printf "\r\033[K"
 }
 
 # ── Check Root ───────────────────────────────────────────────
@@ -273,31 +273,40 @@ install_openclaw() {
     local ACTUAL_HOME
     ACTUAL_HOME=$(eval echo "~$ACTUAL_USER")
     local NVM_DIR="$ACTUAL_HOME/.nvm"
+    local LOGFILE="/tmp/openclaw-install-$$.log"
 
-    # Install build tools required by native modules (node-llama-cpp, sharp)
-    # git is required by npm for some openclaw dependencies
+    # Install build tools + git (required by npm for openclaw dependencies)
     type_color "$DIM" "  > Installing build dependencies..." 0.02
     apt-get install -y -qq build-essential python3 git > /dev/null 2>&1 &
     spinner $! "Installing build-essential, python3, git..."
-    print_ok "Build tools ready"
+
+    # Wait and verify git is available
+    if command -v git &> /dev/null; then
+        print_ok "Build tools + git ready"
+    else
+        # Retry without -qq to force install
+        apt-get install -y git > /dev/null 2>&1
+        if command -v git &> /dev/null; then
+            print_ok "Build tools + git ready"
+        else
+            print_fail "Failed to install git (required by openclaw)"
+            return 1
+        fi
+    fi
 
     echo ""
     type_color "$DIM" "  > Installing openclaw globally..." 0.02
 
-    # HOME must be set explicitly for sudo -u
-    # SHARP_IGNORE_GLOBAL_LIBVIPS=1 skips building libvips from source on Linux
-    local INSTALL_LOG
-    INSTALL_LOG=$(sudo -u "$ACTUAL_USER" bash -c "
+    # Run npm install in background, log to file, show spinner
+    sudo -u "$ACTUAL_USER" bash -c "
         export HOME=\"$ACTUAL_HOME\"
         export NVM_DIR=\"$NVM_DIR\"
         export SHARP_IGNORE_GLOBAL_LIBVIPS=1
         . \"\$NVM_DIR/nvm.sh\"
-        npm install -g openclaw@latest 2>&1
-    " &
-    BGPID=$!
-    spinner $BGPID "Installing openclaw@latest..."
-    wait $BGPID
-    )
+        npm install -g openclaw@latest
+    " > "$LOGFILE" 2>&1 &
+    spinner $! "Installing openclaw@latest..."
+    wait $!
     local EXIT_CODE=$?
 
     if [ $EXIT_CODE -ne 0 ]; then
@@ -305,11 +314,13 @@ install_openclaw() {
         echo -e "  ${DIM}Try manually: SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g openclaw@latest${NC}"
         echo ""
         echo -e "  ${RED}Last error:${NC}"
-        echo "$INSTALL_LOG" | tail -5 | while IFS= read -r line; do
+        tail -5 "$LOGFILE" 2>/dev/null | while IFS= read -r line; do
             echo -e "  ${DIM}$line${NC}"
         done
+        rm -f "$LOGFILE"
         return 1
     fi
+    rm -f "$LOGFILE"
 
     # Verify
     local OC_VERSION
